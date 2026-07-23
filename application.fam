@@ -1,0 +1,16 @@
+App(
+    appid="signal_pets",
+    name="SignalPets",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="signal_pets_app_main",
+    cincludes=["."],
+    requires=["gui", "nfc", "storage", "notification"],
+    stack_size=4 * 1024,
+    order=20,
+    fap_category="Games",
+    fap_icon="icon.png",
+    fap_author="Briliantu",
+    fap_weburl="https://github.com/briliantu/signal_pets",
+    fap_version="1.0",
+    fap_description="Scan NFC tags to discover and collect SignalPets in your CyberDex!",
+)
