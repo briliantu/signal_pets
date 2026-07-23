@@ -6,8 +6,8 @@
 #include <nfc/nfc_device.h>
 #include <notification/notification_messages.h>
 
-#define STORAGE_PATH EXT_PATH("apps_data/signal_pets/cyberdex.dat")
-#define MAX_NAME_LEN 24
+#define STORAGE_PATH    EXT_PATH("apps_data/signal_pets/cyberdex.dat")
+#define MAX_NAME_LEN    24
 #define MAX_ELEMENT_LEN 12
 
 typedef enum {
@@ -55,7 +55,7 @@ typedef struct {
     Pet current_pet;
     CyberDex cyberdex;
     bool has_pet;
-    
+
     AppScreen current_screen;
     uint16_t cyberdex_index;
 } SignalPetsApp;

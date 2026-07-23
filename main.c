@@ -2,6 +2,11 @@
 #include "pet_db.h"
 #include "storage.h"
 
+typedef struct {
+    SignalPetsApp* app;
+    bool detected;
+} NfcScanContext;
+
 static void render_cyberdex_screen(Canvas* canvas, SignalPetsApp* app) {
     if(app->cyberdex.count == 0) {
         canvas_set_font(canvas, FontPrimary);
@@ -16,7 +21,12 @@ static void render_cyberdex_screen(Canvas* canvas, SignalPetsApp* app) {
 
     canvas_set_font(canvas, FontSecondary);
     char header_buf[32];
-    snprintf(header_buf, sizeof(header_buf), "CyberDex #%d/%d", app->cyberdex_index + 1, app->cyberdex.count);
+    snprintf(
+        header_buf,
+        sizeof(header_buf),
+        "CyberDex #%d/%d",
+        app->cyberdex_index + 1,
+        app->cyberdex.count);
     canvas_draw_str(canvas, 2, 10, header_buf);
 
     canvas_set_font(canvas, FontPrimary);
@@ -24,13 +34,25 @@ static void render_cyberdex_screen(Canvas* canvas, SignalPetsApp* app) {
 
     canvas_set_font(canvas, FontSecondary);
     char meta_buf[40];
-    snprintf(meta_buf, sizeof(meta_buf), "Lv.%d | %s | %s", pet->level, pet->element, get_rarity_str(pet->rarity));
+    snprintf(
+        meta_buf,
+        sizeof(meta_buf),
+        "Lv.%d | %s | %s",
+        pet->level,
+        pet->element,
+        get_rarity_str(pet->rarity));
     canvas_draw_str(canvas, 2, 33, meta_buf);
 
     canvas_draw_line(canvas, 0, 36, 128, 36);
 
     char stat_buf[32];
-    snprintf(stat_buf, sizeof(stat_buf), "ATK:%d  DEF:%d  SPD:%d", pet->attack, pet->defense, pet->speed);
+    snprintf(
+        stat_buf,
+        sizeof(stat_buf),
+        "ATK:%d  DEF:%d  SPD:%d",
+        pet->attack,
+        pet->defense,
+        pet->speed);
     canvas_draw_str(canvas, 2, 48, stat_buf);
 
     canvas_draw_str(canvas, 2, 60, "< / > Navigare");
@@ -65,14 +87,14 @@ static void render_callback(Canvas* canvas, void* ctx) {
         if(!app->has_pet) {
             canvas_set_font(canvas, FontPrimary);
             canvas_draw_str(canvas, 28, 15, "SignalPets");
-            
+
             canvas_set_font(canvas, FontSecondary);
             canvas_draw_str(canvas, 8, 30, "Scanează un tag NFC!");
-            
+
             char count_str[32];
             snprintf(count_str, sizeof(count_str), "CyberDex: %d/100", app->cyberdex.count);
             canvas_draw_str(canvas, 24, 43, count_str);
-            
+
             canvas_draw_str(canvas, 2, 60, "[OK]Scan | [v]Dex | [Hold v]Reset");
         } else {
             canvas_set_font(canvas, FontPrimary);
@@ -80,17 +102,25 @@ static void render_callback(Canvas* canvas, void* ctx) {
 
             canvas_set_font(canvas, FontSecondary);
             char meta_str[40];
-            snprintf(meta_str, sizeof(meta_str), "Lv.%d | %s | %s", 
-                     app->current_pet.level, 
-                     app->current_pet.element, 
-                     get_rarity_str(app->current_pet.rarity));
+            snprintf(
+                meta_str,
+                sizeof(meta_str),
+                "Lv.%d | %s | %s",
+                app->current_pet.level,
+                app->current_pet.element,
+                get_rarity_str(app->current_pet.rarity));
             canvas_draw_str(canvas, 2, 23, meta_str);
 
             canvas_draw_line(canvas, 0, 26, 128, 26);
 
             char stat_buf[32];
-            snprintf(stat_buf, sizeof(stat_buf), "ATK:%d  DEF:%d  SPD:%d", 
-                     app->current_pet.attack, app->current_pet.defense, app->current_pet.speed);
+            snprintf(
+                stat_buf,
+                sizeof(stat_buf),
+                "ATK:%d  DEF:%d  SPD:%d",
+                app->current_pet.attack,
+                app->current_pet.defense,
+                app->current_pet.speed);
             canvas_draw_str(canvas, 2, 40, stat_buf);
 
             canvas_draw_str(canvas, 2, 60, "[OK]Scan | [v]Dex | [Hold v]Reset");
@@ -108,34 +138,55 @@ static void trigger_feedback(SignalPetsApp* app, PetRarity rarity) {
     }
 }
 
-static void scan_nfc_card(SignalPetsApp* app) {
-    Nfc* nfc = nfc_alloc();
-    NfcDevice* device = nfc_device_alloc();
-    NfcPoller* poller = nfc_poller_alloc(nfc, NfcProtocolIso14443_3a);
+static NfcCommand nfc_scanner_callback(NfcScannerEvent event, void* context) {
+    NfcScanContext* scan_ctx = context;
 
-    if(nfc_poller_start(poller, NULL, NULL)) {
-        size_t uid_len = 0;
-        const uint8_t* uid = nfc_device_get_uid(device, &uid_len);
+    if(event.type == NfcScannerEventTypeDetected) {
+        const uint8_t* uid = event.data.uid;
+        uint8_t uid_len = event.data.uid_len;
 
         if(uid_len > 0) {
-            furi_mutex_acquire(app->mutex, FuriWaitForever);
-            
+            furi_mutex_acquire(scan_ctx->app->mutex, FuriWaitForever);
+
             Pet new_pet;
             generate_pet(uid, uid_len, &new_pet);
-            app->current_pet = new_pet;
-            app->has_pet = true;
+            scan_ctx->app->current_pet = new_pet;
+            scan_ctx->app->has_pet = true;
 
-            cyberdex_add_pet(&app->cyberdex, &new_pet);
-            trigger_feedback(app, new_pet.rarity);
-            
-            furi_mutex_release(app->mutex);
+            cyberdex_add_pet(&scan_ctx->app->cyberdex, &new_pet);
+            trigger_feedback(scan_ctx->app, new_pet.rarity);
+
+            furi_mutex_release(scan_ctx->app->mutex);
+            scan_ctx->detected = true;
         }
+        return NfcCommandStop;
     }
 
-    nfc_poller_stop(poller);
-    nfc_poller_free(poller);
-    nfc_device_free(device);
+    return NfcCommandContinue;
+}
+
+static void scan_nfc_card(SignalPetsApp* app) {
+    Nfc* nfc = nfc_alloc();
+    NfcScanner* scanner = nfc_scanner_alloc(nfc);
+
+    NfcScanContext scan_ctx = {.app = app, .detected = false};
+
+    nfc_scanner_start(scanner, nfc_scanner_callback, &scan_ctx);
+
+    uint32_t start_time = furi_get_tick();
+    while(!scan_ctx.detected && (furi_get_tick() - start_time < 3000)) {
+        furi_delay_ms(50);
+    }
+
+    nfc_scanner_stop(scanner);
+    nfc_scanner_free(scanner);
     nfc_free(nfc);
+}
+
+static void input_callback(InputEvent* input_event, void* ctx) {
+    furi_assert(ctx);
+    FuriMessageQueue* event_queue = ctx;
+    furi_message_queue_put(event_queue, input_event, FuriWaitForever);
 }
 
 int32_t signal_pets_app_main(void* p) {
@@ -153,7 +204,7 @@ int32_t signal_pets_app_main(void* p) {
 
     app->view_port = view_port_alloc();
     view_port_draw_callback_set(app->view_port, render_callback, app);
-    view_port_input_callback_set(app->view_port, (ViewPortInputCallback)furi_message_queue_put, event_queue);
+    view_port_input_callback_set(app->view_port, input_callback, event_queue);
 
     app->gui = furi_record_open(RECORD_GUI);
     gui_add_view_port(app->gui, app->view_port, GuiLayerFullscreen);
@@ -185,8 +236,9 @@ int32_t signal_pets_app_main(void* p) {
                     } else if(event.key == InputKeyRight && app->cyberdex.count > 0) {
                         app->cyberdex_index = (app->cyberdex_index + 1) % app->cyberdex.count;
                     } else if(event.key == InputKeyLeft && app->cyberdex.count > 0) {
-                        app->cyberdex_index = (app->cyberdex_index == 0) ? 
-                            (app->cyberdex.count - 1) : (app->cyberdex_index - 1);
+                        app->cyberdex_index = (app->cyberdex_index == 0) ?
+                                                  (app->cyberdex.count - 1) :
+                                                  (app->cyberdex_index - 1);
                     }
                 } else if(event.type == InputTypeLong && event.key == InputKeyDown) {
                     app->current_screen = ScreenResetConfirm;

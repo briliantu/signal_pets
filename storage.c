@@ -3,13 +3,14 @@
 
 void cyberdex_save(CyberDex* cyberdex) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
-    storage_common_migrate(storage, EXT_PATH("apps_data/signal_pets"), EXT_PATH("apps_data/signal_pets"));
-    
+    storage_common_migrate(
+        storage, EXT_PATH("apps_data/signal_pets"), EXT_PATH("apps_data/signal_pets"));
+
     File* file = storage_file_alloc(storage);
     if(storage_file_open(file, STORAGE_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
         storage_file_write(file, cyberdex, sizeof(CyberDex));
     }
-    
+
     storage_file_close(file);
     storage_file_free(file);
     furi_record_close(RECORD_STORAGE);
