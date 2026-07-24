@@ -1,5 +1,6 @@
 #include "storage.h"
 #include <storage/storage.h>
+#include <string.h>
 
 void cyberdex_save(CyberDex* cyberdex) {
     Storage* storage = furi_record_open(RECORD_STORAGE);

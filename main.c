@@ -1,10 +1,25 @@
 #include "signal_pets_app.h"
 #include "pet_db.h"
 #include "storage.h"
+#include <nfc/nfc_scanner.h>
+#include <nfc/nfc_poller.h>
+#include <nfc/protocols/iso14443_3a/iso14443_3a.h>
+#include <nfc/protocols/iso14443_3b/iso14443_3b.h>
+#include <nfc/protocols/iso14443_4a/iso14443_4a.h>
+#include <nfc/protocols/iso14443_4b/iso14443_4b.h>
+#include <nfc/protocols/iso15693_3/iso15693_3.h>
+#include <nfc/protocols/mf_ultralight/mf_ultralight.h>
+#include <nfc/protocols/mf_classic/mf_classic.h>
+#include <nfc/protocols/mf_plus/mf_plus.h>
+#include <nfc/protocols/mf_desfire/mf_desfire.h>
+#include <nfc/protocols/felica/felica.h>
+#include <nfc/protocols/slix/slix.h>
+#include <nfc/protocols/st25tb/st25tb.h>
 
 typedef struct {
     SignalPetsApp* app;
     bool detected;
+    NfcProtocol protocol;
 } NfcScanContext;
 
 static void render_cyberdex_screen(Canvas* canvas, SignalPetsApp* app) {
@@ -86,16 +101,23 @@ static void render_callback(Canvas* canvas, void* ctx) {
     } else {
         if(!app->has_pet) {
             canvas_set_font(canvas, FontPrimary);
-            canvas_draw_str(canvas, 28, 15, "SignalPets");
+            canvas_draw_str(canvas, 18, 8, "SignalPets");
 
             canvas_set_font(canvas, FontSecondary);
-            canvas_draw_str(canvas, 8, 30, "Scanează un tag NFC!");
-
-            char count_str[32];
-            snprintf(count_str, sizeof(count_str), "CyberDex: %d/100", app->cyberdex.count);
-            canvas_draw_str(canvas, 24, 43, count_str);
-
-            canvas_draw_str(canvas, 2, 60, "[OK]Scan | [v]Dex | [Hold v]Reset");
+            if(app->scanning) {
+                canvas_draw_str(canvas, 2, 26, "Scanează...");
+                canvas_draw_str(canvas, 2, 38, "Aproape gata...");
+                canvas_draw_str(canvas, 2, 52, "[Back] Anulează");
+            } else {
+                canvas_draw_str(canvas, 2, 26, "Scanează un tag NFC!");
+                char count_str[32];
+                snprintf(count_str, sizeof(count_str), "CyberDex: %d/100", app->cyberdex.count);
+                canvas_draw_str(canvas, 2, 40, count_str);
+                if(app->scan_failed) {
+                    canvas_draw_str(canvas, 2, 52, "Scanare eșuată");
+                }
+                canvas_draw_str(canvas, 2, 60, "[OK]Scan [v]Dex [Hold v]Reset");
+            }
         } else {
             canvas_set_font(canvas, FontPrimary);
             canvas_draw_str(canvas, 2, 12, app->current_pet.name);
@@ -109,9 +131,9 @@ static void render_callback(Canvas* canvas, void* ctx) {
                 app->current_pet.level,
                 app->current_pet.element,
                 get_rarity_str(app->current_pet.rarity));
-            canvas_draw_str(canvas, 2, 23, meta_str);
+            canvas_draw_str(canvas, 2, 20, meta_str);
 
-            canvas_draw_line(canvas, 0, 26, 128, 26);
+            canvas_draw_line(canvas, 0, 30, 128, 30);
 
             char stat_buf[32];
             snprintf(
@@ -123,7 +145,11 @@ static void render_callback(Canvas* canvas, void* ctx) {
                 app->current_pet.speed);
             canvas_draw_str(canvas, 2, 40, stat_buf);
 
-            canvas_draw_str(canvas, 2, 60, "[OK]Scan | [v]Dex | [Hold v]Reset");
+            if(app->scanning) {
+                canvas_draw_str(canvas, 2, 52, "Scanează... [Back] Anulează");
+            } else {
+                canvas_draw_str(canvas, 2, 56, "[OK]Scan [v]Dex [Hold v]Reset");
+            }
         }
     }
 
@@ -138,49 +164,148 @@ static void trigger_feedback(SignalPetsApp* app, PetRarity rarity) {
     }
 }
 
-static NfcCommand nfc_scanner_callback(NfcScannerEvent event, void* context) {
+static void nfc_scanner_callback(NfcScannerEvent event, void* context) {
     NfcScanContext* scan_ctx = context;
-
-    if(event.type == NfcScannerEventTypeDetected) {
-        const uint8_t* uid = event.data.uid;
-        uint8_t uid_len = event.data.uid_len;
-
-        if(uid_len > 0) {
-            furi_mutex_acquire(scan_ctx->app->mutex, FuriWaitForever);
-
-            Pet new_pet;
-            generate_pet(uid, uid_len, &new_pet);
-            scan_ctx->app->current_pet = new_pet;
-            scan_ctx->app->has_pet = true;
-
-            cyberdex_add_pet(&scan_ctx->app->cyberdex, &new_pet);
-            trigger_feedback(scan_ctx->app, new_pet.rarity);
-
-            furi_mutex_release(scan_ctx->app->mutex);
-            scan_ctx->detected = true;
-        }
-        return NfcCommandStop;
+    if(event.type != NfcScannerEventTypeDetected) {
+        return;
     }
 
-    return NfcCommandContinue;
+    if(event.data.protocol_num > 0) {
+        scan_ctx->protocol = event.data.protocols[0];
+        scan_ctx->detected = true;
+    }
 }
 
-static void scan_nfc_card(SignalPetsApp* app) {
+static const uint8_t*
+    get_device_uid(NfcProtocol protocol, const NfcDeviceData* device_data, size_t* uid_len) {
+    switch(protocol) {
+    case NfcProtocolIso14443_3a:
+        return iso14443_3a_get_uid((const Iso14443_3aData*)device_data, uid_len);
+    case NfcProtocolIso14443_3b:
+        return iso14443_3b_get_uid((const Iso14443_3bData*)device_data, uid_len);
+    case NfcProtocolIso14443_4a:
+        return iso14443_4a_get_uid((const Iso14443_4aData*)device_data, uid_len);
+    case NfcProtocolIso14443_4b:
+        return iso14443_4b_get_uid((const Iso14443_4bData*)device_data, uid_len);
+    case NfcProtocolIso15693_3:
+        return iso15693_3_get_uid((const Iso15693_3Data*)device_data, uid_len);
+    case NfcProtocolMfUltralight:
+        return mf_ultralight_get_uid((const MfUltralightData*)device_data, uid_len);
+    case NfcProtocolMfClassic:
+        return mf_classic_get_uid((const MfClassicData*)device_data, uid_len);
+    case NfcProtocolMfPlus:
+        return mf_plus_get_uid((const MfPlusData*)device_data, uid_len);
+    case NfcProtocolMfDesfire:
+        return mf_desfire_get_uid((const MfDesfireData*)device_data, uid_len);
+    case NfcProtocolFelica:
+        return felica_get_uid((const FelicaData*)device_data, uid_len);
+    case NfcProtocolSlix:
+        return slix_get_uid((const SlixData*)device_data, uid_len);
+    case NfcProtocolSt25tb:
+        return st25tb_get_uid((const St25tbData*)device_data, uid_len);
+    default:
+        *uid_len = 0;
+        return NULL;
+    }
+}
+
+static int32_t scan_thread_callback(void* context) {
+    SignalPetsApp* app = context;
     Nfc* nfc = nfc_alloc();
+    if(!nfc) {
+        goto cleanup;
+    }
+
     NfcScanner* scanner = nfc_scanner_alloc(nfc);
+    if(!scanner) {
+        nfc_free(nfc);
+        goto cleanup;
+    }
 
-    NfcScanContext scan_ctx = {.app = app, .detected = false};
-
+    NfcScanContext scan_ctx = {.app = app, .detected = false, .protocol = NfcProtocolInvalid};
     nfc_scanner_start(scanner, nfc_scanner_callback, &scan_ctx);
 
     uint32_t start_time = furi_get_tick();
-    while(!scan_ctx.detected && (furi_get_tick() - start_time < 3000)) {
+    while(!scan_ctx.detected) {
+        bool cancel_requested = false;
+        furi_mutex_acquire(app->mutex, FuriWaitForever);
+        cancel_requested = app->scan_cancel_requested;
+        furi_mutex_release(app->mutex);
+        if(cancel_requested || (furi_get_tick() - start_time >= 3000)) {
+            break;
+        }
         furi_delay_ms(50);
     }
 
     nfc_scanner_stop(scanner);
     nfc_scanner_free(scanner);
+
+    bool cancel_requested = false;
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    cancel_requested = app->scan_cancel_requested;
+    furi_mutex_release(app->mutex);
+
+    if(scan_ctx.detected && scan_ctx.protocol != NfcProtocolInvalid && !cancel_requested) {
+        NfcPoller* poller = nfc_poller_alloc(nfc, scan_ctx.protocol);
+        if(poller) {
+            if(nfc_poller_detect(poller)) {
+                const NfcDeviceData* device_data = nfc_poller_get_data(poller);
+                if(device_data) {
+                    size_t uid_len = 0;
+                    const uint8_t* uid = get_device_uid(scan_ctx.protocol, device_data, &uid_len);
+                    if(uid && uid_len > 0) {
+                        uint8_t uid_len8 = uid_len > 255 ? 255 : (uint8_t)uid_len;
+                        Pet new_pet;
+                        generate_pet(uid, uid_len8, &new_pet);
+
+                        furi_mutex_acquire(app->mutex, FuriWaitForever);
+                        app->current_pet = new_pet;
+                        app->has_pet = true;
+                        cyberdex_add_pet(&app->cyberdex, &new_pet);
+                        app->scan_failed = false;
+                        furi_mutex_release(app->mutex);
+
+                        trigger_feedback(app, new_pet.rarity);
+                    }
+                }
+            }
+            nfc_poller_free(poller);
+        }
+    } else if(!scan_ctx.detected && !cancel_requested) {
+        furi_mutex_acquire(app->mutex, FuriWaitForever);
+        app->scan_failed = true;
+        furi_mutex_release(app->mutex);
+    }
+
     nfc_free(nfc);
+
+cleanup:
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    app->scanning = false;
+    app->scan_cancel_requested = false;
+    furi_mutex_release(app->mutex);
+    view_port_update(app->view_port);
+
+    return 0;
+}
+
+static void start_nfc_scan(SignalPetsApp* app) {
+    if(app->scanning) {
+        return;
+    }
+
+    if(app->scan_thread && furi_thread_get_state(app->scan_thread) != FuriThreadStateStopped) {
+        return;
+    }
+
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    app->scanning = true;
+    app->scan_failed = false;
+    app->scan_cancel_requested = false;
+    furi_mutex_release(app->mutex);
+
+    view_port_update(app->view_port);
+    furi_thread_start(app->scan_thread);
 }
 
 static void input_callback(InputEvent* input_event, void* ctx) {
@@ -197,6 +322,10 @@ int32_t signal_pets_app_main(void* p) {
     app->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
     app->has_pet = false;
+    app->scanning = false;
+    app->scan_failed = false;
+    app->scan_cancel_requested = false;
+    app->scan_thread = furi_thread_alloc_ex("scan", 4096, scan_thread_callback, app);
     app->current_screen = ScreenMain;
     app->cyberdex_index = 0;
 
@@ -219,15 +348,27 @@ int32_t signal_pets_app_main(void* p) {
             if(app->current_screen == ScreenMain) {
                 if(event.type == InputTypeShort) {
                     if(event.key == InputKeyBack) {
-                        running = false;
+                        if(app->scanning) {
+                            furi_mutex_acquire(app->mutex, FuriWaitForever);
+                            app->scan_cancel_requested = true;
+                            furi_mutex_release(app->mutex);
+                        } else {
+                            running = false;
+                        }
                     } else if(event.key == InputKeyOk) {
-                        scan_nfc_card(app);
+                        if(!app->scanning) {
+                            start_nfc_scan(app);
+                        }
                     } else if(event.key == InputKeyDown) {
-                        app->current_screen = ScreenCyberDex;
-                        app->cyberdex_index = 0;
+                        if(!app->scanning) {
+                            app->current_screen = ScreenCyberDex;
+                            app->cyberdex_index = 0;
+                        }
                     }
                 } else if(event.type == InputTypeLong && event.key == InputKeyDown) {
-                    app->current_screen = ScreenResetConfirm;
+                    if(!app->scanning) {
+                        app->current_screen = ScreenResetConfirm;
+                    }
                 }
             } else if(app->current_screen == ScreenCyberDex) {
                 if(event.type == InputTypeShort) {
@@ -258,6 +399,13 @@ int32_t signal_pets_app_main(void* p) {
             furi_mutex_release(app->mutex);
             view_port_update(app->view_port);
         }
+    }
+
+    if(app->scan_thread) {
+        if(furi_thread_get_state(app->scan_thread) == FuriThreadStateRunning) {
+            furi_thread_join(app->scan_thread);
+        }
+        furi_thread_free(app->scan_thread);
     }
 
     gui_remove_view_port(app->gui, app->view_port);

@@ -55,6 +55,10 @@ typedef struct {
     Pet current_pet;
     CyberDex cyberdex;
     bool has_pet;
+    bool scanning;
+    bool scan_failed;
+    bool scan_cancel_requested;
+    FuriThread* scan_thread;
 
     AppScreen current_screen;
     uint16_t cyberdex_index;
